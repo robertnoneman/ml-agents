@@ -2,13 +2,16 @@ using System;
 using UnityEngine;
 using System.Linq;
 using MLAgents;
+using UnityEngine.Serialization;
 
 public class GridAgent : Agent
 {
+    Academy m_Academy;
+    [FormerlySerializedAs("m_Area")]
     [Header("Specific to GridWorld")]
-    private GridAcademy m_Academy;
+    public GridArea area;
     public float timeBetweenDecisionsAtInference;
-    private float m_TimeSinceDecision;
+    float m_TimeSinceDecision;
 
     [Tooltip("Because we want an observation right before making a decision, we can force " +
         "a camera to render before making a decision. Place the agentCam here if using " +
@@ -19,15 +22,15 @@ public class GridAgent : Agent
         "masking turned on may not behave optimally when action masking is turned off.")]
     public bool maskActions = true;
 
-    private const int k_NoAction = 0;  // do nothing!
-    private const int k_Up = 1;
-    private const int k_Down = 2;
-    private const int k_Left = 3;
-    private const int k_Right = 4;
+    const int k_NoAction = 0;  // do nothing!
+    const int k_Up = 1;
+    const int k_Down = 2;
+    const int k_Left = 3;
+    const int k_Right = 4;
 
     public override void InitializeAgent()
     {
-        m_Academy = FindObjectOfType(typeof(GridAcademy)) as GridAcademy;
+        m_Academy = FindObjectOfType<Academy>();
     }
 
     public override void CollectObservations()
@@ -45,12 +48,12 @@ public class GridAgent : Agent
     /// <summary>
     /// Applies the mask for the agents action to disallow unnecessary actions.
     /// </summary>
-    private void SetMask()
+    void SetMask()
     {
         // Prevents the agent from picking an action that would make it collide with a wall
         var positionX = (int)transform.position.x;
         var positionZ = (int)transform.position.z;
-        var maxPosition = m_Academy.gridSize - 1;
+        var maxPosition = (int)m_Academy.FloatProperties.GetPropertyWithDefault("gridSize", 5f) - 1;
 
         if (positionX == 0)
         {
@@ -74,7 +77,7 @@ public class GridAgent : Agent
     }
 
     // to be implemented by the developer
-    public override void AgentAction(float[] vectorAction, string textAction)
+    public override void AgentAction(float[] vectorAction)
     {
         AddReward(-0.01f);
         var action = Mathf.FloorToInt(vectorAction[0]);
@@ -120,10 +123,31 @@ public class GridAgent : Agent
         }
     }
 
+    public override float[] Heuristic()
+    {
+        if (Input.GetKey(KeyCode.D))
+        {
+            return new float[] { k_Right };
+        }
+        if (Input.GetKey(KeyCode.W))
+        {
+            return new float[] { k_Up };
+        }
+        if (Input.GetKey(KeyCode.A))
+        {
+            return new float[] { k_Left };
+        }
+        if (Input.GetKey(KeyCode.S))
+        {
+            return new float[] { k_Down };
+        }
+        return new float[] { k_NoAction };
+    }
+
     // to be implemented by the developer
     public override void AgentReset()
     {
-        m_Academy.AcademyReset();
+        area.AreaReset();
     }
 
     public void FixedUpdate()
@@ -131,14 +155,14 @@ public class GridAgent : Agent
         WaitTimeInference();
     }
 
-    private void WaitTimeInference()
+    void WaitTimeInference()
     {
         if (renderCamera != null)
         {
             renderCamera.Render();
         }
 
-        if (!m_Academy.GetIsInference())
+        if (m_Academy.IsCommunicatorOn)
         {
             RequestDecision();
         }

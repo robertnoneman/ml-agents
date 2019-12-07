@@ -1,10 +1,11 @@
 import logging
 import numpy as np
-from typing import Any, Dict
-import tensorflow as tf
+from typing import Any, Dict, Optional
+
+from mlagents.tf_utils import tf
 
 from mlagents.envs.timers import timed
-from mlagents.envs.brain import BrainInfo
+from mlagents.envs.brain import BrainInfo, BrainParameters
 from mlagents.trainers.models import EncoderType, LearningRateSchedule
 from mlagents.trainers.ppo.models import PPOModel
 from mlagents.trainers.tf_policy import TFPolicy
@@ -17,7 +18,14 @@ logger = logging.getLogger("mlagents.trainers")
 
 
 class PPOPolicy(TFPolicy):
-    def __init__(self, seed, brain, trainer_params, is_training, load):
+    def __init__(
+        self,
+        seed: int,
+        brain: BrainParameters,
+        trainer_params: Dict[str, Any],
+        is_training: bool,
+        load: bool,
+    ):
         """
         Policy for Proximal Policy Optimization Networks.
         :param seed: Random seed.
@@ -29,8 +37,8 @@ class PPOPolicy(TFPolicy):
         super().__init__(seed, brain, trainer_params)
 
         reward_signal_configs = trainer_params["reward_signals"]
-        self.inference_dict = {}
-        self.update_dict = {}
+        self.inference_dict: Dict[str, tf.Tensor] = {}
+        self.update_dict: Dict[str, tf.Tensor] = {}
         self.stats_name_to_update_name = {
             "Losses/Value Loss": "value_loss",
             "Losses/Policy Loss": "policy_loss",
@@ -42,6 +50,7 @@ class PPOPolicy(TFPolicy):
         self.create_reward_signals(reward_signal_configs)
 
         with self.graph.as_default():
+            self.bc_module: Optional[BCModule] = None
             # Create pretrainer if needed
             if "pretraining" in trainer_params:
                 BCModule.check_config(trainer_params["pretraining"])
@@ -52,8 +61,6 @@ class PPOPolicy(TFPolicy):
                     default_num_epoch=trainer_params["num_epoch"],
                     **trainer_params["pretraining"],
                 )
-            else:
-                self.bc_module = None
 
         if load:
             self._load_graph()
@@ -145,14 +152,10 @@ class PPOPolicy(TFPolicy):
         epsilon = None
         if self.use_recurrent:
             if not self.use_continuous_act:
-                feed_dict[
-                    self.model.prev_action
-                ] = brain_info.previous_vector_actions.reshape(
-                    [-1, len(self.model.act_size)]
+                feed_dict[self.model.prev_action] = self.retrieve_previous_action(
+                    brain_info.agents
                 )
-            if brain_info.memories.shape[1] == 0:
-                brain_info.memories = self.make_empty_memory(len(brain_info.agents))
-            feed_dict[self.model.memory_in] = brain_info.memories
+            feed_dict[self.model.memory_in] = self.retrieve_memories(brain_info.agents)
         if self.use_continuous_act:
             epsilon = np.random.normal(
                 size=(len(brain_info.vector_observations), self.model.act_size[0])
@@ -160,8 +163,6 @@ class PPOPolicy(TFPolicy):
             feed_dict[self.model.epsilon] = epsilon
         feed_dict = self.fill_eval_dict(feed_dict, brain_info)
         run_out = self._execute_model(feed_dict, self.inference_dict)
-        if self.use_continuous_act:
-            run_out["random_normal_epsilon"] = epsilon
         return run_out
 
     @timed
@@ -205,7 +206,6 @@ class PPOPolicy(TFPolicy):
 
         if self.use_continuous_act:
             feed_dict[model.output_pre] = mini_batch["actions_pre"]
-            feed_dict[model.epsilon] = mini_batch["random_normal_epsilon"]
         else:
             feed_dict[model.action_holder] = mini_batch["actions"]
             if self.use_recurrent:
@@ -246,14 +246,13 @@ class PPOPolicy(TFPolicy):
             ]
         if self.use_vec_obs:
             feed_dict[self.model.vector_in] = [brain_info.vector_observations[idx]]
+        agent_id = brain_info.agents[idx]
         if self.use_recurrent:
-            if brain_info.memories.shape[1] == 0:
-                brain_info.memories = self.make_empty_memory(len(brain_info.agents))
-            feed_dict[self.model.memory_in] = [brain_info.memories[idx]]
+            feed_dict[self.model.memory_in] = self.retrieve_memories([agent_id])
         if not self.use_continuous_act and self.use_recurrent:
-            feed_dict[self.model.prev_action] = [
-                brain_info.previous_vector_actions[idx]
-            ]
+            feed_dict[self.model.prev_action] = self.retrieve_previous_action(
+                [agent_id]
+            )
         value_estimates = self.sess.run(self.model.value_heads, feed_dict)
 
         value_estimates = {k: float(v) for k, v in value_estimates.items()}

@@ -9,7 +9,7 @@ public class CrawlerAgent : Agent
 
     public Transform ground;
     public bool detectTargets;
-    public bool targetIsStatic = false;
+    public bool targetIsStatic;
     public bool respawnTargetWhenTouched;
     public float targetSpawnRadius;
 
@@ -163,7 +163,7 @@ public class CrawlerAgent : Agent
         target.position = newTargetPos + ground.position;
     }
 
-    public override void AgentAction(float[] vectorAction, string textAction)
+    public override void AgentAction(float[] vectorAction)
     {
         if (detectTargets)
         {

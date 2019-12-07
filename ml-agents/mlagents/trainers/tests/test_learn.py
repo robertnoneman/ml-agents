@@ -14,12 +14,17 @@ def basic_options(extra_args=None):
     return parse_command_line(args)
 
 
+@patch("mlagents.trainers.learn.TrainerFactory")
 @patch("mlagents.trainers.learn.SamplerManager")
 @patch("mlagents.trainers.learn.SubprocessEnvManager")
 @patch("mlagents.trainers.learn.create_environment_factory")
 @patch("mlagents.trainers.learn.load_config")
 def test_run_training(
-    load_config, create_environment_factory, subproc_env_mock, sampler_manager_mock
+    load_config,
+    create_environment_factory,
+    subproc_env_mock,
+    sampler_manager_mock,
+    trainer_factory_mock,
 ):
     mock_env = MagicMock()
     mock_env.external_brain_names = []
@@ -33,7 +38,7 @@ def test_run_training(
         with patch.object(TrainerController, "start_learning", MagicMock()):
             learn.run_training(0, 0, basic_options(), MagicMock())
             mock_init.assert_called_once_with(
-                {},
+                trainer_factory_mock.return_value,
                 "./models/ppo-0",
                 "./summaries",
                 "ppo-0",
@@ -41,7 +46,6 @@ def test_run_training(
                 None,
                 False,
                 0,
-                True,
                 sampler_manager_mock.return_value,
                 None,
             )
@@ -90,7 +94,6 @@ def test_commandline_args():
     assert opt.run_id == "ppo"
     assert opt.save_freq == 50000
     assert opt.seed == -1
-    assert opt.fast_simulation is True
     assert opt.train_model is False
     assert opt.base_port == 5005
     assert opt.num_envs == 1
@@ -112,7 +115,6 @@ def test_commandline_args():
         "--num-runs=3",
         "--save-freq=123456",
         "--seed=7890",
-        "--slow",
         "--train",
         "--base-port=4004",
         "--num-envs=2",
@@ -133,7 +135,6 @@ def test_commandline_args():
     assert opt.run_id == "myawesomerun"
     assert opt.save_freq == 123456
     assert opt.seed == 7890
-    assert opt.fast_simulation is False
     assert opt.train_model is True
     assert opt.base_port == 4004
     assert opt.num_envs == 2

@@ -16,7 +16,7 @@ imitation learning.
 The ML-Agents Toolkit provides a Python API for controlling the Agent simulation
 loop of an environment or game built with Unity. This API is used by the
 training algorithms inside the ML-Agent Toolkit, but you can also write your own
-Python programs using this API. Go [here](../notebooks/getting-started.ipynb) 
+Python programs using this API. Go [here](../notebooks/getting-started.ipynb)
 for a Jupyter Notebook walking through the functionality of the API.
 
 The key objects in the Python API include:
@@ -33,11 +33,9 @@ These classes are all defined in the `ml-agents/mlagents/envs` folder of
 the ML-Agents SDK.
 
 To communicate with an Agent in a Unity environment from a Python program, the
-Agent must either use a Brain present in the Academy's `Broadcast Hub`.
+Agent must use a LearningBrain.
 Your code is expected to return
-actions for Agents with Brains with the `Control` checkbox of the
-Academy's `Broadcast Hub` checked, but can only observe broadcasting
-Brains (the information you receive for an Agent is the same in both cases).
+actions for Agents with LearningBrains.
 
 _Notice: Currently communication between Unity and Python takes place over an
 open socket without authentication. As such, please make sure that the network
@@ -52,7 +50,7 @@ file, put the file in the same directory as `envs`. For example, if the filename
 of your Unity environment is 3DBall.app, in python, run:
 
 ```python
-from mlagents.envs import UnityEnvironment
+from mlagents.envs.environment import UnityEnvironment
 env = UnityEnvironment(file_name="3DBall", worker_id=0, seed=1)
 ```
 
@@ -78,10 +76,6 @@ A BrainInfo object contains the following fields:
   the list corresponds to the n<sup>th</sup> observation of the Brain.
 - **`vector_observations`** : A two dimensional numpy array of dimension `(batch
   size, vector observation size)`.
-- **`text_observations`** : A list of string corresponding to the Agents text
-  observations.
-- **`memories`** : A two dimensional numpy array of dimension `(batch size,
-  memory size)` which corresponds to the memories sent at the previous step.
 - **`rewards`** : A list as long as the number of Agents using the Brain
   containing the rewards they each obtained at the previous step.
 - **`local_done`** : A list as long as the number of Agents using the Brain
@@ -89,35 +83,20 @@ A BrainInfo object contains the following fields:
 - **`max_reached`** : A list as long as the number of Agents using the Brain
   containing true if the Agents reached their max steps.
 - **`agents`** : A list of the unique ids of the Agents using the Brain.
-- **`previous_actions`** : A two dimensional numpy array of dimension `(batch
-  size, vector action size)` if the vector action space is continuous and
-  `(batch size, number of branches)` if the vector action space is discrete.
 
 Once loaded, you can use your UnityEnvironment object, which referenced by a
-variable named `env` in this example, can be used in the following way:  
+variable named `env` in this example, can be used in the following way:
 
-- **Print : `print(str(env))`**  
-  Prints all parameters relevant to the loaded environment and the 
-  Brains.  
-- **Reset : `env.reset(train_model=True, config=None)`**  
+- **Print : `print(str(env))`**
+  Prints all parameters relevant to the loaded environment and the
+  Brains.
+- **Reset : `env.reset()`**
   Send a reset signal to the environment, and provides a dictionary mapping
-  Brain names to BrainInfo objects.  
-  - `train_model` indicates whether to run the environment in train (`True`) or
-    test (`False`) mode.
-  - `config` is an optional dictionary of configuration flags specific to the
-    environment. For generic environments, `config` can be ignored. `config` is
-    a dictionary of strings to floats where the keys are the names of the
-    `resetParameters` and the values are their corresponding float values.
-    Define the reset parameters on the Academy Inspector window in the Unity
-    Editor.
-- **Step : `env.step(action, memory=None, text_action=None)`**  
+  Brain names to BrainInfo objects.
+- **Step : `env.step(action)`**
   Sends a step signal to the environment using the actions. For each Brain :
   - `action` can be one dimensional arrays or two dimensional arrays if you have
     multiple Agents per Brain.
-  - `memory` is an optional input that can be used to send a list of floats per
-    Agents to be retrieved at the next step.
-  - `text_action` is an optional input that be used to send a single string per
-    Agent.
 
     Returns a dictionary mapping Brain names to BrainInfo objects.
 
@@ -130,8 +109,7 @@ variable named `env` in this example, can be used in the following way:
     observations = brainInfo.vector_observations
     ```
 
-    Note that if you have more than one Brain in the Academy's `Broadcast Hub` with
-    the `Control` checkbox checked, you
+    Note that if you have more than one LearningBrain in the scene, you
     must provide dictionaries from Brain names to arrays for `action`, `memory`
     and `value`. For example: If you have two Learning Brains named `brain1` and
     `brain2` each with one Agent taking two continuous actions, then you can
@@ -141,10 +119,81 @@ variable named `env` in this example, can be used in the following way:
     action = {'brain1':[1.0, 2.0], 'brain2':[3.0,4.0]}
     ```
 
-    Returns a dictionary mapping Brain names to BrainInfo objects.  
+    Returns a dictionary mapping Brain names to BrainInfo objects.
 - **Close : `env.close()`**
   Sends a shutdown signal to the environment and closes the communication
   socket.
+
+### Modifying the environment from Python
+The Environment can be modified by using side channels to send data to the
+environment. When creating the environment, pass a list of side channels as
+`side_channels` argument to the constructor.
+
+__Note__ : A side channel will only send/receive messages when `env.step` is
+called.
+
+#### EngineConfigurationChannel
+An `EngineConfiguration` will allow you to modify the time scale and graphics quality of the Unity engine.
+`EngineConfigurationChannel` has two methods :
+
+ * `set_configuration_parameters` with arguments
+   * width: Defines the width of the display. Default 80.
+   * height: Defines the height of the display. Default 80.
+   * quality_level: Defines the quality level of the simulation. Default 1.
+   * time_scale: Defines the multiplier for the deltatime in the simulation. If set to a higher value, time will pass faster in the simulation but the physics might break. Default 20.
+   *  target_frame_rate: Instructs simulation to try to render at a specified frame rate. Default -1.
+ * `set_configuration` with argument config which is an `EngineConfig`
+ NamedTuple object.
+
+For example :
+```python
+from mlagents.envs.environment import UnityEnvironment
+from mlagents.envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
+
+channel = EngineConfigurationChannel()
+
+env = UnityEnvironment(base_port = 5004, side_channels = [channel])
+
+channel.set_configuration_parameters(time_scale = 2.0)
+
+i = env.reset()
+...
+```
+
+#### FloatPropertiesChannel
+A `FloatPropertiesChannel` will allow you to get and set float properties
+in the environment. You can call get_property and set_property on the
+side channel to read and write properties.
+`FloatPropertiesChannel` has three methods:
+
+ * `set_property` Sets a property in the Unity Environment.
+  * key: The string identifier of the property.
+  * value: The float value of the property.
+ * `get_property` Gets a property in the Unity Environment. If the property was not found, will return None.
+  * key: The string identifier of the property.
+ * `list_properties` Returns a list of all the string identifiers of the properties
+
+```python
+from mlagents.envs.environment import UnityEnvironment
+from mlagents.envs.side_channel.float_properties_channel import FloatPropertiesChannel
+
+channel = FloatPropertiesChannel()
+
+env = UnityEnvironment(base_port = 5004, side_channels = [channel])
+
+channel.set_property("parameter_1", 2.0)
+
+i = env.reset()
+...
+```
+
+Once a property has been modified in Python, you can access it in C# after the next call to `step` as follows:
+
+```csharp
+var academy = FindObjectOfType<Academy>();
+var sharedProperties = academy.FloatProperties;
+float property1 = sharedProperties.GetPropertyWithDefault("parameter_1", 0.0f);
+```
 
 ## mlagents-learn
 

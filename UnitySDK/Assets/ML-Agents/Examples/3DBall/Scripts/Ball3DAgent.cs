@@ -5,14 +5,14 @@ public class Ball3DAgent : Agent
 {
     [Header("Specific to Ball3D")]
     public GameObject ball;
-    private Rigidbody m_BallRb;
-    private ResetParameters m_ResetParams;
+    Rigidbody m_BallRb;
+    IFloatProperties m_ResetParams;
 
     public override void InitializeAgent()
     {
         m_BallRb = ball.GetComponent<Rigidbody>();
         var academy = FindObjectOfType<Academy>();
-        m_ResetParams = academy.resetParameters;
+        m_ResetParams = academy.FloatProperties;
         SetResetParameters();
     }
 
@@ -24,24 +24,21 @@ public class Ball3DAgent : Agent
         AddVectorObs(m_BallRb.velocity);
     }
 
-    public override void AgentAction(float[] vectorAction, string textAction)
+    public override void AgentAction(float[] vectorAction)
     {
-        if (brain.brainParameters.vectorActionSpaceType == SpaceType.Continuous)
+        var actionZ = 2f * Mathf.Clamp(vectorAction[0], -1f, 1f);
+        var actionX = 2f * Mathf.Clamp(vectorAction[1], -1f, 1f);
+
+        if ((gameObject.transform.rotation.z < 0.25f && actionZ > 0f) ||
+            (gameObject.transform.rotation.z > -0.25f && actionZ < 0f))
         {
-            var actionZ = 2f * Mathf.Clamp(vectorAction[0], -1f, 1f);
-            var actionX = 2f * Mathf.Clamp(vectorAction[1], -1f, 1f);
+            gameObject.transform.Rotate(new Vector3(0, 0, 1), actionZ);
+        }
 
-            if ((gameObject.transform.rotation.z < 0.25f && actionZ > 0f) ||
-                (gameObject.transform.rotation.z > -0.25f && actionZ < 0f))
-            {
-                gameObject.transform.Rotate(new Vector3(0, 0, 1), actionZ);
-            }
-
-            if ((gameObject.transform.rotation.x < 0.25f && actionX > 0f) ||
-                (gameObject.transform.rotation.x > -0.25f && actionX < 0f))
-            {
-                gameObject.transform.Rotate(new Vector3(1, 0, 0), actionX);
-            }
+        if ((gameObject.transform.rotation.x < 0.25f && actionX > 0f) ||
+            (gameObject.transform.rotation.x > -0.25f && actionX < 0f))
+        {
+            gameObject.transform.Rotate(new Vector3(1, 0, 0), actionX);
         }
         if ((ball.transform.position.y - gameObject.transform.position.y) < -2f ||
             Mathf.Abs(ball.transform.position.x - gameObject.transform.position.x) > 3f ||
@@ -68,11 +65,20 @@ public class Ball3DAgent : Agent
         SetResetParameters();
     }
 
+    public override float[] Heuristic()
+    {
+        var action = new float[2];
+
+        action[0] = -Input.GetAxis("Horizontal");
+        action[1] = Input.GetAxis("Vertical");
+        return action;
+    }
+
     public void SetBall()
     {
         //Set the attributes of the ball by fetching the information from the academy
-        m_BallRb.mass = m_ResetParams["mass"];
-        var scale = m_ResetParams["scale"];
+        m_BallRb.mass = m_ResetParams.GetPropertyWithDefault("mass", 1.0f);
+        var scale = m_ResetParams.GetPropertyWithDefault("scale", 1.0f);
         ball.transform.localScale = new Vector3(scale, scale, scale);
     }
 

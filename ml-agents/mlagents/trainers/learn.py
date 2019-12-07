@@ -1,5 +1,4 @@
 # # Unity ML-Agents Toolkit
-
 import logging
 import argparse
 
@@ -11,16 +10,20 @@ import numpy as np
 
 from typing import Any, Callable, Optional, List, NamedTuple
 
-
+import mlagents.trainers
+import mlagents.envs
+from mlagents import tf_utils
 from mlagents.trainers.trainer_controller import TrainerController
 from mlagents.trainers.exception import TrainerError
-from mlagents.trainers.meta_curriculum import MetaCurriculumError, MetaCurriculum
-from mlagents.trainers.trainer_util import initialize_trainers, load_config
+from mlagents.trainers.meta_curriculum import MetaCurriculum
+from mlagents.trainers.trainer_util import load_config, TrainerFactory
 from mlagents.envs.environment import UnityEnvironment
 from mlagents.envs.sampler_class import SamplerManager
 from mlagents.envs.exception import SamplerException
 from mlagents.envs.base_unity_environment import BaseUnityEnvironment
 from mlagents.envs.subprocess_env_manager import SubprocessEnvManager
+from mlagents.envs.side_channel.side_channel import SideChannel
+from mlagents.envs.side_channel.engine_configuration_channel import EngineConfig
 
 
 class CommandLineOptions(NamedTuple):
@@ -37,21 +40,31 @@ class CommandLineOptions(NamedTuple):
     num_envs: int
     curriculum_folder: Optional[str]
     lesson: int
-    slow: bool
     no_graphics: bool
     multi_gpu: bool  # ?
     trainer_config_path: str
     sampler_file_path: Optional[str]
     docker_target_name: Optional[str]
     env_args: Optional[List[str]]
-
-    @property
-    def fast_simulation(self) -> bool:
-        return not self.slow
+    cpu: bool
+    width: int
+    height: int
+    quality_level: int
+    time_scale: float
+    target_frame_rate: int
 
     @staticmethod
     def from_argparse(args: Any) -> "CommandLineOptions":
         return CommandLineOptions(**vars(args))
+
+
+def get_version_string() -> str:
+    return f""" Version information:\n
+    ml-agents: {mlagents.trainers.__version__},
+    ml-agents-envs: {mlagents.envs.__version__},
+    Communicator API: {UnityEnvironment.API_VERSION},
+    TensorFlow: {tf_utils.tf.__version__}
+"""
 
 
 def parse_command_line(argv: Optional[List[str]] = None) -> CommandLineOptions:
@@ -105,9 +118,6 @@ def parse_command_line(argv: Optional[List[str]] = None) -> CommandLineOptions:
         "--seed", default=-1, type=int, help="Random seed used for training"
     )
     parser.add_argument(
-        "--slow", action="store_true", help="Whether to run the game at training speed"
-    )
-    parser.add_argument(
         "--train",
         default=False,
         dest="train_model",
@@ -156,6 +166,43 @@ def parse_command_line(argv: Optional[List[str]] = None) -> CommandLineOptions:
         nargs=argparse.REMAINDER,
         help="Arguments passed to the Unity executable.",
     )
+    parser.add_argument(
+        "--cpu", default=False, action="store_true", help="Run with CPU only"
+    )
+
+    parser.add_argument("--version", action="version", version=get_version_string())
+
+    eng_conf = parser.add_argument_group(title="Engine Configuration")
+    eng_conf.add_argument(
+        "--width",
+        default=84,
+        type=int,
+        help="The width of the executable window of the environment(s)",
+    )
+    eng_conf.add_argument(
+        "--height",
+        default=84,
+        type=int,
+        help="The height of the executable window of the environment(s)",
+    )
+    eng_conf.add_argument(
+        "--quality-level",
+        default=5,
+        type=int,
+        help="The quality level of the environment(s)",
+    )
+    eng_conf.add_argument(
+        "--time-scale",
+        default=20,
+        type=float,
+        help="The time scale of the Unity environment(s)",
+    )
+    eng_conf.add_argument(
+        "--target-frame-rate",
+        default=-1,
+        type=int,
+        help="The target frame rate of the Unity environment(s)",
+    )
 
     args = parser.parse_args(argv)
     return CommandLineOptions.from_argparse(args)
@@ -173,10 +220,8 @@ def run_training(
     :param run_options: Command line arguments for training.
     """
     # Docker Parameters
-
     trainer_config_path = options.trainer_config_path
     curriculum_folder = options.curriculum_folder
-
     # Recognize and use docker volume if one is passed as an argument
     if not options.docker_target_name:
         model_path = "./models/{run_id}-{sub_id}".format(
@@ -201,27 +246,34 @@ def run_training(
         summaries_dir = "/{docker_target_name}/summaries".format(
             docker_target_name=options.docker_target_name
         )
-
     trainer_config = load_config(trainer_config_path)
+    port = options.base_port + (sub_id * options.num_envs)
+    if options.env_path is None:
+        port = 5004  # This is the in Editor Training Port
     env_factory = create_environment_factory(
         options.env_path,
         options.docker_target_name,
         options.no_graphics,
         run_seed,
-        options.base_port + (sub_id * options.num_envs),
+        port,
         options.env_args,
     )
-    env = SubprocessEnvManager(env_factory, options.num_envs)
+    engine_config = EngineConfig(
+        options.width,
+        options.height,
+        options.quality_level,
+        options.time_scale,
+        options.target_frame_rate,
+    )
+    env_manager = SubprocessEnvManager(env_factory, engine_config, options.num_envs)
     maybe_meta_curriculum = try_create_meta_curriculum(
-        curriculum_folder, env, options.lesson
+        curriculum_folder, env_manager, options.lesson
     )
     sampler_manager, resampling_interval = create_sampler_manager(
-        options.sampler_file_path, env.reset_parameters, run_seed
+        options.sampler_file_path, run_seed
     )
-
-    trainers = initialize_trainers(
+    trainer_factory = TrainerFactory(
         trainer_config,
-        env.external_brains,
         summaries_dir,
         options.run_id,
         model_path,
@@ -232,10 +284,9 @@ def run_training(
         maybe_meta_curriculum,
         options.multi_gpu,
     )
-
     # Create controller and begin training.
     tc = TrainerController(
-        trainers,
+        trainer_factory,
         model_path,
         summaries_dir,
         options.run_id + "-" + str(sub_id),
@@ -243,19 +294,19 @@ def run_training(
         maybe_meta_curriculum,
         options.train_model,
         run_seed,
-        options.fast_simulation,
         sampler_manager,
         resampling_interval,
     )
-
     # Signal that environment has been launched.
     process_queue.put(True)
-
     # Begin training
-    tc.start_learning(env)
+    try:
+        tc.start_learning(env_manager)
+    finally:
+        env_manager.close()
 
 
-def create_sampler_manager(sampler_file_path, env_reset_params, run_seed=None):
+def create_sampler_manager(sampler_file_path, run_seed=None):
     sampler_config = None
     resample_interval = None
     if sampler_file_path is not None:
@@ -268,11 +319,13 @@ def create_sampler_manager(sampler_file_path, env_reset_params, run_seed=None):
                     "Specified resampling-interval is not valid. Please provide"
                     " a positive integer value for resampling-interval"
                 )
+
         else:
             raise SamplerException(
                 "Resampling interval was not specified in the sampler file."
                 " Please specify it with the 'resampling-interval' key in the sampler config file."
             )
+
     sampler_manager = SamplerManager(sampler_config, run_seed)
     return sampler_manager, resample_interval
 
@@ -282,22 +335,13 @@ def try_create_meta_curriculum(
 ) -> Optional[MetaCurriculum]:
     if curriculum_folder is None:
         return None
+
     else:
-        meta_curriculum = MetaCurriculum(curriculum_folder, env.reset_parameters)
+        meta_curriculum = MetaCurriculum(curriculum_folder)
         # TODO: Should be able to start learning at different lesson numbers
         # for each curriculum.
         meta_curriculum.set_all_curriculums_to_lesson_num(lesson)
-        for brain_name in meta_curriculum.brains_to_curriculums.keys():
-            if brain_name not in env.external_brains.keys():
-                raise MetaCurriculumError(
-                    "One of the curricula "
-                    "defined in " + curriculum_folder + " "
-                    "does not have a corresponding "
-                    "Brain. Check that the "
-                    "curriculum file has the same "
-                    "name as the Brain "
-                    "whose curriculum it defines."
-                )
+
         return meta_curriculum
 
 
@@ -330,7 +374,7 @@ def create_environment_factory(
     seed: Optional[int],
     start_port: int,
     env_args: Optional[List[str]],
-) -> Callable[[int], BaseUnityEnvironment]:
+) -> Callable[[int, List[SideChannel]], BaseUnityEnvironment]:
     if env_path is not None:
         # Strip out executable extensions if passed
         env_path = (
@@ -342,19 +386,19 @@ def create_environment_factory(
         )
     docker_training = docker_target_name is not None
     if docker_training and env_path is not None:
-        """
-            Comments for future maintenance:
-                Some OS/VM instances (e.g. COS GCP Image) mount filesystems
-                with COS flag which prevents execution of the Unity scene,
-                to get around this, we will copy the executable into the
-                container.
-            """
+        #     Comments for future maintenance:
+        #         Some OS/VM instances (e.g. COS GCP Image) mount filesystems
+        #         with COS flag which prevents execution of the Unity scene,
+        #         to get around this, we will copy the executable into the
+        #         container.
         # Navigate in docker path and find env_path and copy it.
         env_path = prepare_for_docker_run(docker_target_name, env_path)
     seed_count = 10000
     seed_pool = [np.random.randint(0, seed_count) for _ in range(seed_count)]
 
-    def create_unity_environment(worker_id: int) -> UnityEnvironment:
+    def create_unity_environment(
+        worker_id: int, side_channels: List[SideChannel]
+    ) -> UnityEnvironment:
         env_seed = seed
         if not env_seed:
             env_seed = seed_pool[worker_id % len(seed_pool)]
@@ -366,6 +410,7 @@ def create_environment_factory(
             no_graphics=no_graphics,
             base_port=start_port,
             args=env_args,
+            side_channels=side_channels,
         )
 
     return create_unity_environment
@@ -393,7 +438,6 @@ def main():
         )
     except Exception:
         print("\n\n\tUnity Technologies\n")
-
     options = parse_command_line()
     trainer_logger = logging.getLogger("mlagents.trainers")
     env_logger = logging.getLogger("mlagents.envs")
@@ -401,7 +445,9 @@ def main():
     if options.debug:
         trainer_logger.setLevel("DEBUG")
         env_logger.setLevel("DEBUG")
-
+    else:
+        # disable noisy warnings from tensorflow.
+        tf_utils.set_warnings_enabled(False)
     if options.env_path is None and options.num_runs > 1:
         raise TrainerError(
             "It is not possible to launch more than one concurrent training session "
@@ -410,6 +456,8 @@ def main():
 
     jobs = []
     run_seed = options.seed
+    if options.cpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
     if options.num_runs == 1:
         if options.seed == -1:

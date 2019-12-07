@@ -59,9 +59,7 @@ class BCPolicy(TFPolicy):
 
         feed_dict = self.fill_eval_dict(feed_dict, brain_info)
         if self.use_recurrent:
-            if brain_info.memories.shape[1] == 0:
-                brain_info.memories = self.make_empty_memory(len(brain_info.agents))
-            feed_dict[self.model.memory_in] = brain_info.memories
+            feed_dict[self.model.memory_in] = self.retrieve_memories(brain_info.agents)
         run_out = self._execute_model(feed_dict, self.inference_dict)
         return run_out
 
@@ -83,7 +81,8 @@ class BCPolicy(TFPolicy):
         else:
             feed_dict[self.model.true_action] = mini_batch["actions"]
             feed_dict[self.model.action_masks] = np.ones(
-                (num_sequences, sum(self.brain.vector_action_space_size))
+                (num_sequences, sum(self.brain.vector_action_space_size)),
+                dtype=np.float32,
             )
         if self.use_vec_obs:
             feed_dict[self.model.vector_in] = mini_batch["vector_obs"]
@@ -91,6 +90,8 @@ class BCPolicy(TFPolicy):
             visual_obs = mini_batch["visual_obs%d" % i]
             feed_dict[self.model.visual_in[i]] = visual_obs
         if self.use_recurrent:
-            feed_dict[self.model.memory_in] = np.zeros([num_sequences, self.m_size])
+            feed_dict[self.model.memory_in] = np.zeros(
+                [num_sequences, self.m_size], dtype=np.float32
+            )
         run_out = self._execute_model(feed_dict, self.update_dict)
         return run_out

@@ -1,7 +1,7 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import numpy as np
-import tensorflow as tf
+from mlagents.tf_utils import tf
 
 from mlagents.envs.timers import timed
 from mlagents.envs.brain import BrainInfo, BrainParameters
@@ -58,6 +58,7 @@ class SACPolicy(TFPolicy):
 
         with self.graph.as_default():
             # Create pretrainer if needed
+            self.bc_module: Optional[BCModule] = None
             if "pretraining" in trainer_params:
                 BCModule.check_config(trainer_params["pretraining"])
                 self.bc_module = BCModule(
@@ -74,8 +75,6 @@ class SACPolicy(TFPolicy):
                         "Pretraining: Samples Per Update is not a valid setting for SAC."
                     )
                     self.bc_module.samples_per_update = 1
-            else:
-                self.bc_module = None
 
         if load:
             self._load_graph()
@@ -114,7 +113,7 @@ class SACPolicy(TFPolicy):
                 seed=seed,
                 stream_names=list(reward_signal_configs.keys()),
                 tau=float(trainer_params["tau"]),
-                gammas=list(_val["gamma"] for _val in reward_signal_configs.values()),
+                gammas=[_val["gamma"] for _val in reward_signal_configs.values()],
                 vis_encode_type=EncoderType(
                     trainer_params.get("vis_encode_type", "simple")
                 ),
@@ -176,14 +175,10 @@ class SACPolicy(TFPolicy):
         }
         if self.use_recurrent:
             if not self.use_continuous_act:
-                feed_dict[
-                    self.model.prev_action
-                ] = brain_info.previous_vector_actions.reshape(
-                    [-1, len(self.model.act_size)]
+                feed_dict[self.model.prev_action] = self.retrieve_previous_action(
+                    brain_info.agents
                 )
-            if brain_info.memories.shape[1] == 0:
-                brain_info.memories = self.make_empty_memory(len(brain_info.agents))
-            feed_dict[self.model.memory_in] = brain_info.memories
+            feed_dict[self.model.memory_in] = self.retrieve_memories(brain_info.agents)
 
         feed_dict = self.fill_eval_dict(feed_dict, brain_info)
         run_out = self._execute_model(feed_dict, self.inference_dict)
@@ -191,7 +186,7 @@ class SACPolicy(TFPolicy):
 
     @timed
     def update(
-        self, mini_batch: Dict[str, Any], num_sequences: int, update_target: bool = True
+        self, mini_batch: Dict[str, Any], num_sequences: int
     ) -> Dict[str, float]:
         """
         Updates model using buffer.
@@ -208,8 +203,8 @@ class SACPolicy(TFPolicy):
         update_vals = self._execute_model(feed_dict, self.update_dict)
         for stat_name, update_name in stats_needed.items():
             update_stats[stat_name] = update_vals[update_name]
-        if update_target:
-            self.sess.run(self.model.target_update_op)
+        # Update target network. By default, target update happens at every policy update.
+        self.sess.run(self.model.target_update_op)
         return update_stats
 
     def update_reward_signals(
